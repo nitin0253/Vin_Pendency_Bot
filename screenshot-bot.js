@@ -92,7 +92,7 @@ async function uploadImage() {
   const completeBody = JSON.stringify({
     files: [{ id: file_id, title: `QC Pendency Dashboard · ${now} IST` }],
     channel_id: CHANNEL,
-    initial_comment: `📊 *QC Pendency Dashboard*  ·  ${now} IST\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>`,
+    initial_comment: `🚨 *QC Pendency Alert* | Hourly Report\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>  ·  ${now} IST\n\n<@U08VA3ARKLM> <@U098XR16D6U> <@U098QVB7BMF>`,
   });
   const r3 = await httpsRequest(
     'slack.com',
@@ -115,7 +115,7 @@ async function sendWebhook() {
   if (!WEBHOOK) { console.log('⚠ No webhook configured'); return; }
   const now = new Date().toLocaleString('en-IN', { timeZone:'Asia/Kolkata', dateStyle:'medium', timeStyle:'short' });
   const payload = JSON.stringify({
-    text: `📊 *QC Pendency Dashboard*  ·  ${now} IST\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>`,
+    text: `🚨 *QC Pendency Alert* | Hourly Report\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>  ·  ${now} IST\n\n<@U08VA3ARKLM> <@U098XR16D6U> <@U098QVB7BMF>`,
   });
   const wUrl = new URL(WEBHOOK);
   const r = await httpsRequest(
