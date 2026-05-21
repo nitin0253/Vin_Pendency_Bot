@@ -35,8 +35,15 @@ async function takeScreenshot() {
     await page.setViewport({ width: 1600, height: 900 });
     console.log('📡 Loading dashboard...');
     await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-    try { await page.waitForSelector('#dash', { timeout: 30000 }); } catch {}
-    await new Promise(r => setTimeout(r, 5000));
+    // Wait for actual data to appear (metrics loaded = data ready)
+    try {
+      await page.waitForSelector('#metrics .metric', { timeout: 40000 });
+      console.log('✅ Metrics loaded');
+    } catch {
+      console.log('⚠ Metrics timeout — waiting extra...');
+    }
+    // Extra settle time for charts and animations
+    await new Promise(r => setTimeout(r, 6000));
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
     await new Promise(r => setTimeout(r, 500));
     await page.screenshot({ path: SCREENSHOT, clip: { x:0, y:0, width:1600, height:900 } });
