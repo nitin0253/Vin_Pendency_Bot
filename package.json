@@ -1,12 +1,8 @@
 {
   "name": "qc-dashboard-slack-bot",
   "version": "1.0.0",
-  "description": "Hourly screenshot of QC Pendency Dashboard → Slack",
+  "description": "Hourly QC Dashboard screenshot to Slack",
   "main": "screenshot-bot.js",
-  "scripts": {
-    "start": "node screenshot-bot.js"
-  },
-  "dependencies": {
-    "puppeteer": "^21.0.0"
-  }
+  "scripts": { "start": "node screenshot-bot.js" },
+  "dependencies": { "puppeteer": "^22.0.0" }
 }
