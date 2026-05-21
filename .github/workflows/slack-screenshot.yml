@@ -2,7 +2,7 @@ name: QC Dashboard Screenshot → Slack
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0,30 * * * *'  # every 30 min — GitHub cron can be delayed up to 1hr
   workflow_dispatch:
 
 jobs:
