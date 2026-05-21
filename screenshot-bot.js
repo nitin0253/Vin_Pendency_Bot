@@ -5,7 +5,7 @@ const path  = require('path');
 const SCREENSHOT = path.join(process.cwd(), 'dashboard.png');
 
 const DASHBOARD_URL = 'https://vin-tracker-delivery.vercel.app/';
-const WEBHOOK       = process.env.SLACK_WEBHOOK || 'https://hooks.slack.com/services/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';
+const WEBHOOK       = process.env.SLACK_WEBHOOK; // set SLACK_WEBHOOK in GitHub Secrets
 const BOT_TOKEN     = process.env.SLACK_BOT_TOKEN;
 const CHANNEL       = process.env.SLACK_CHANNEL;
 
