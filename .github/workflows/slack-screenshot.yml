@@ -18,21 +18,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
-      - name: Cache Puppeteer browsers
+      - name: Cache Puppeteer browser
         uses: actions/cache@v4
-        id: puppeteer-cache
         with:
           path: ~/.cache/puppeteer
-          key: puppeteer-chrome-${{ runner.os }}
+          key: puppeteer-${{ runner.os }}-v1
 
-      - name: Install npm deps
-        run: npm install
-
-      - name: Download Chromium (if not cached)
-        if: steps.puppeteer-cache.outputs.cache-hit != 'true'
-        run: npx puppeteer browsers install chrome
+      - name: Install & setup
+        run: |
+          npm install
+          npx puppeteer browsers install chrome
 
       - name: Take screenshot & post to Slack
         timeout-minutes: 8
