@@ -55,17 +55,16 @@ async function uploadToSlack() {
   const now       = new Date().toLocaleString('en-IN', { timeZone:'Asia/Kolkata', dateStyle:'medium', timeStyle:'short' });
   const comment   = `📊 *QC Pendency Dashboard*  ·  ${now} IST\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>`;
 
-  // Step 1: Get upload URL
+  // Step 1: Get upload URL (params must be query string, not body)
   console.log('📤 Getting Slack upload URL...');
   const urlRes = await request({
     hostname: 'slack.com',
-    path: '/api/files.getUploadURLExternal',
-    method: 'POST',
+    path: `/api/files.getUploadURLExternal?filename=dashboard.png&length=${fileSize}`,
+    method: 'GET',
     headers: {
       'Authorization': `Bearer ${BOT_TOKEN}`,
-      'Content-Type': 'application/json',
     },
-  }, JSON.stringify({ filename: 'dashboard.png', length: fileSize }));
+  });
 
   const urlData = JSON.parse(urlRes.body);
   if (!urlData.ok) throw new Error(`getUploadURL failed: ${urlData.error}`);
@@ -116,14 +115,19 @@ async function sendWebhook() {
   const payload = JSON.stringify({
     text: `📊 *QC Pendency Dashboard*  ·  ${now} IST\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>`,
   });
+  // Parse webhook URL properly
+  const wUrl = new URL(WEBHOOK);
   const res = await request({
-    hostname: 'hooks.slack.com',
-    path: WEBHOOK.replace('https://hooks.slack.com', ''),
+    hostname: wUrl.hostname,
+    path: wUrl.pathname,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
   }, payload);
   console.log('Webhook response:', res.status, res.body);
-  if (res.status !== 200) throw new Error(`Webhook failed: ${res.status} ${res.body}`);
+  if (res.status !== 200) {
+    console.error(`⚠ Webhook failed: ${res.status} — check SLACK_WEBHOOK secret is a valid active webhook URL`);
+    throw new Error(`Webhook ${res.status}: ${res.body}`);
+  }
   console.log('✅ Webhook sent!');
 }
 
