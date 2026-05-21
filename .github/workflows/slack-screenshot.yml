@@ -22,13 +22,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Install Chromium system deps
+      - name: Install Chromium system libs
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
-            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
-            libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2
+            libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+            libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 \
+            libx11-6 libx11-xcb1 libxcb1 libxext6 libxss1 libxtst6 fonts-liberation
 
       - name: Take screenshot & post to Slack
         env:
@@ -37,10 +38,10 @@ jobs:
           SLACK_CHANNEL:    ${{ secrets.SLACK_CHANNEL }}
         run: node screenshot-bot.js
 
-      - name: Upload screenshot artifact (for debugging)
+      - name: Upload screenshot artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dashboard-screenshot
-          path: /tmp/qc-dashboard.png
+          path: dashboard.png
           retention-days: 3
