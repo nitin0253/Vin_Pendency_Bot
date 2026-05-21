@@ -1,0 +1,47 @@
+name: QC Dashboard Screenshot → Slack
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # every hour, on the hour (UTC)
+  workflow_dispatch:       # manual trigger from GitHub UI anytime
+
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+            libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2
+
+      - name: Take screenshot & post to Slack
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+        run: node screenshot-bot.js
+
+      - name: Upload screenshot as artifact (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-screenshot
+          path: /tmp/qc-dashboard.png
+          retention-days: 3
