@@ -7,7 +7,6 @@ const BOT_TOKEN     = process.env.SLACK_BOT_TOKEN;
 const CHANNEL       = process.env.SLACK_CHANNEL;
 const WEBHOOK       = process.env.SLACK_WEBHOOK;
 
-// data-id values match the onclick="activate('...')" calls in the HTML
 const TABS = [
   { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼' },
   { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬' },
@@ -28,6 +27,41 @@ function httpsRequest(hostname, path, method, headers, body) {
   });
 }
 
+// ── Wait for loading to finish ────────────────────────────────────
+// Waits until:
+//   1. The "Loading..." / "FETCHING QC PENDING DATA" text is gone
+//   2. AND at least one numeric metric is visible on screen
+async function waitForDataLoaded(page, tabName, timeoutMs = 60000) {
+  console.log(`  ⏳ Waiting for data to load...`);
+  const start = Date.now();
+
+  await page.waitForFunction(() => {
+    // Check loading indicators are gone
+    const bodyText = document.body.innerText;
+    const isLoading =
+      bodyText.includes('FETCHING QC PENDING DATA') ||
+      bodyText.includes('Loading...') ||
+      bodyText.includes('Fetching') ||
+      document.querySelector('.loading, .spinner, [class*="loading"], [class*="spinner"]') !== null;
+
+    if (isLoading) return false;
+
+    // Check that at least one real number is visible (metric card)
+    const allEls = Array.from(document.querySelectorAll('*'));
+    const hasNumbers = allEls.some(el => {
+      if (el.children.length > 0) return false; // leaf nodes only
+      return /^\d+$/.test(el.textContent.trim());
+    });
+
+    return hasNumbers;
+  }, { timeout: timeoutMs, polling: 500 });
+
+  console.log(`  ✅ Data loaded in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+
+  // Small extra settle for charts/animations to finish rendering
+  await new Promise(r => setTimeout(r, 2000));
+}
+
 // ── 1. Take 3 screenshots (one per tab) ──────────────────────────
 async function takeScreenshots() {
   const puppeteer = require('puppeteer');
@@ -45,46 +79,45 @@ async function takeScreenshots() {
 
     console.log('📡 Loading dashboard...');
     await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-    await new Promise(r => setTimeout(r, 4000));
 
     // Force dark theme
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 
+    // Wait for the initial page load to finish (Images tab is default)
+    await waitForDataLoaded(page, 'Images');
+
     for (const tab of TABS) {
-      console.log(`\n🔖 Activating tab: ${tab.name} (data-id="${tab.dataId}")`);
+      console.log(`\n🔖 Activating tab: ${tab.name}`);
 
-      // Call activate() directly — same as the button's onclick handler
-      // Falls back to clicking the [data-id] button if activate() isn't global
-      const result = await page.evaluate((dataId) => {
-        // Method 1: call the global activate() function directly
-        if (typeof activate === 'function') {
-          activate(dataId);
-          return 'called activate()';
-        }
-        // Method 2: click the button by data-id attribute
-        const btn = document.querySelector(`button[data-id="${dataId}"]`);
-        if (btn) {
-          btn.click();
-          return 'clicked button[data-id]';
-        }
-        return 'nothing found';
-      }, tab.dataId);
-
-      console.log(`  Method used: ${result}`);
-
-      // Wait for the active tab class to appear on the correct button
-      try {
-        await page.waitForFunction((dataId) => {
+      // Skip clicking for Images since it's already active on first load
+      if (tab.dataId !== 'images') {
+        // Call activate() directly — mirrors onclick="activate('videos')"
+        const method = await page.evaluate((dataId) => {
+          if (typeof activate === 'function') {
+            activate(dataId);
+            return 'activate()';
+          }
           const btn = document.querySelector(`button[data-id="${dataId}"]`);
-          return btn && btn.classList.contains('active');
-        }, { timeout: 10000 }, tab.dataId);
-        console.log(`  ✅ Tab is now active`);
-      } catch {
-        console.log(`  ⚠ Active class wait timed out — proceeding`);
-      }
+          if (btn) { btn.click(); return 'btn.click()'; }
+          return 'not found';
+        }, tab.dataId);
 
-      // Extra settle time for data/charts to render
-      await new Promise(r => setTimeout(r, 5000));
+        console.log(`  Method: ${method}`);
+
+        // Confirm the tab button itself went active
+        try {
+          await page.waitForFunction((dataId) => {
+            const btn = document.querySelector(`button[data-id="${dataId}"]`);
+            return btn && btn.classList.contains('active');
+          }, { timeout: 10000 }, tab.dataId);
+          console.log(`  ✅ Tab button is active`);
+        } catch {
+          console.log(`  ⚠ Tab active-class check timed out`);
+        }
+
+        // Now wait for the new tab's data to fully load
+        await waitForDataLoaded(page, tab.name);
+      }
 
       const filePath = path.join(process.cwd(), tab.file);
       await page.screenshot({ path: filePath, clip: { x: 0, y: 0, width: 1600, height: 900 } });
@@ -161,7 +194,6 @@ async function uploadAllScreenshots(screenshots) {
       : `${emoji} *${name} Pendency*`;
 
     await uploadImage(filePath, `QC ${name} Pendency · ${now} IST`, comment);
-
     if (i < screenshots.length - 1) await new Promise(r => setTimeout(r, 1500));
   }
 }
