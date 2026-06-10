@@ -28,14 +28,14 @@ function httpsRequest(hostname, path, method, headers, body) {
 }
 
 // ── Wait for loading spinner to disappear ─────────────────────────
-// Only checks that the loading text is gone — no DOM structure assumptions
-async function waitForDataLoaded(page, tabName, timeoutMs = 60000) {
+async function waitForDataLoaded(page, tabName, timeoutMs = 45000) {
   console.log(`  ⏳ Waiting for "${tabName}" data...`);
   const start = Date.now();
 
   try {
+    // Use textContent (not innerText) — works reliably in headless mode
     await page.waitForFunction(() => {
-      const text = document.body.innerText || '';
+      const text = document.body.textContent || '';
       return (
         !text.includes('FETCHING QC PENDING DATA') &&
         !text.includes('Fetching') &&
@@ -45,7 +45,8 @@ async function waitForDataLoaded(page, tabName, timeoutMs = 60000) {
 
     console.log(`  ✅ Loaded in ${((Date.now() - start) / 1000).toFixed(1)}s`);
   } catch (e) {
-    console.log(`  ⚠ Load wait timed out — taking screenshot anyway`);
+    // Never fatal — just log and continue
+    console.log(`  ⚠ Load wait timed out after ${((Date.now() - start) / 1000).toFixed(1)}s — proceeding anyway`);
   }
 
   // Let charts/animations finish rendering
