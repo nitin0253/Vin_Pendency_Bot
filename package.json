@@ -4,5 +4,8 @@
   "description": "Hourly QC Dashboard screenshot to Slack",
   "main": "screenshot-bot.js",
   "scripts": { "start": "node screenshot-bot.js" },
-  "dependencies": { "puppeteer": "^22.0.0" }
+  "dependencies": {
+    "puppeteer": "^22.0.0",
+    "sharp": "^0.33.0"
+  }
 }
