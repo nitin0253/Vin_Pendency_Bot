@@ -2,13 +2,13 @@ name: QC Dashboard Screenshot → Slack
 
 on:
   schedule:
-    - cron: '0,15,30,45 * * * *'  # every 15 min — GitHub delays ~30-60min, so this gives ~hourly actual runs
+    - cron: '0,15,30,45 * * * *'
   workflow_dispatch:
 
 jobs:
   screenshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 20  # increased from 15 — 3 tabs need more time
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -31,7 +31,7 @@ jobs:
           npx puppeteer browsers install chrome
 
       - name: Take screenshots & post to Slack
-        timeout-minutes: 12  # increased from 8 — 3 tabs × ~3-4min each
+        timeout-minutes: 12
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL:   ${{ secrets.SLACK_CHANNEL }}
@@ -47,4 +47,5 @@ jobs:
             qc-images.png
             qc-videos.png
             qc-360.png
+            qc-combined.png
           retention-days: 3
