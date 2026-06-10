@@ -7,11 +7,11 @@ const BOT_TOKEN     = process.env.SLACK_BOT_TOKEN;
 const CHANNEL       = process.env.SLACK_CHANNEL;
 const WEBHOOK       = process.env.SLACK_WEBHOOK;
 
-// Tab definitions — label must match visible button text on the dashboard
+// data-id values match the onclick="activate('...')" calls in the HTML
 const TABS = [
-  { name: 'Images',  file: 'qc-images.png'  },
-  { name: 'Videos',  file: 'qc-videos.png'  },
-  { name: '360°',    file: 'qc-360.png'     },
+  { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼' },
+  { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬' },
+  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁' },
 ];
 
 // ── HTTPS helper ──────────────────────────────────────────────────
@@ -45,53 +45,52 @@ async function takeScreenshots() {
 
     console.log('📡 Loading dashboard...');
     await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 4000));
 
     // Force dark theme
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 
     for (const tab of TABS) {
-      console.log(`\n🔖 Switching to tab: ${tab.name}`);
+      console.log(`\n🔖 Activating tab: ${tab.name} (data-id="${tab.dataId}")`);
 
-      // Click the tab button that contains the tab name text
-      const clicked = await page.evaluate((tabName) => {
-        // Try <button> elements first, then any clickable element
-        const buttons = Array.from(document.querySelectorAll('button, [role="tab"], a'));
-        const btn = buttons.find(el => el.textContent.trim().startsWith(tabName));
-        if (btn) { btn.click(); return true; }
-        return false;
-      }, tab.name);
-
-      if (!clicked) {
-        console.warn(`⚠ Could not find tab "${tab.name}" — trying XPath`);
-        // Fallback: XPath text match
-        try {
-          await page.waitForXPath(`//*[contains(text(),'${tab.name}')]`, { timeout: 5000 });
-          const [el] = await page.$x(`//*[contains(text(),'${tab.name}')]`);
-          if (el) await el.click();
-        } catch {
-          console.warn(`⚠ XPath fallback also failed for "${tab.name}" — screenshotting current state`);
+      // Call activate() directly — same as the button's onclick handler
+      // Falls back to clicking the [data-id] button if activate() isn't global
+      const result = await page.evaluate((dataId) => {
+        // Method 1: call the global activate() function directly
+        if (typeof activate === 'function') {
+          activate(dataId);
+          return 'called activate()';
         }
-      }
+        // Method 2: click the button by data-id attribute
+        const btn = document.querySelector(`button[data-id="${dataId}"]`);
+        if (btn) {
+          btn.click();
+          return 'clicked button[data-id]';
+        }
+        return 'nothing found';
+      }, tab.dataId);
 
-      // Wait for content to settle after tab switch
-      await new Promise(r => setTimeout(r, 3000));
+      console.log(`  Method used: ${result}`);
 
-      // Try to wait for data metrics to appear
+      // Wait for the active tab class to appear on the correct button
       try {
-        await page.waitForSelector('.metric, [class*="metric"], [class*="card"], [class*="stat"]', { timeout: 15000 });
-        console.log(`✅ Content loaded for ${tab.name}`);
+        await page.waitForFunction((dataId) => {
+          const btn = document.querySelector(`button[data-id="${dataId}"]`);
+          return btn && btn.classList.contains('active');
+        }, { timeout: 10000 }, tab.dataId);
+        console.log(`  ✅ Tab is now active`);
       } catch {
-        console.log(`⚠ Metric selector timeout for ${tab.name} — proceeding anyway`);
+        console.log(`  ⚠ Active class wait timed out — proceeding`);
       }
 
-      // Extra settle for charts/animations
-      await new Promise(r => setTimeout(r, 4000));
+      // Extra settle time for data/charts to render
+      await new Promise(r => setTimeout(r, 5000));
 
       const filePath = path.join(process.cwd(), tab.file);
       await page.screenshot({ path: filePath, clip: { x: 0, y: 0, width: 1600, height: 900 } });
       const kb = Math.round(fs.statSync(filePath).size / 1024);
-      console.log(`📸 Screenshot saved: ${tab.file} (${kb} KB)`);
-      screenshots.push({ ...tab, filePath, kb });
+      console.log(`  📸 Saved ${tab.file} (${kb} KB)`);
+      screenshots.push({ ...tab, filePath });
     }
   } finally {
     await browser.close();
@@ -105,7 +104,6 @@ async function uploadImage(filePath, title, comment) {
   const img  = fs.readFileSync(filePath);
   const size = img.length;
 
-  // Step 1: Get upload URL
   const r1 = await httpsRequest(
     'slack.com',
     `/api/files.getUploadURLExternal?filename=${path.basename(filePath)}&length=${size}`,
@@ -118,7 +116,6 @@ async function uploadImage(filePath, title, comment) {
 
   const { upload_url, file_id } = j1;
 
-  // Step 2: Upload file bytes to presigned URL
   const uploadParsed = new URL(upload_url);
   await httpsRequest(
     uploadParsed.hostname,
@@ -128,7 +125,6 @@ async function uploadImage(filePath, title, comment) {
     img
   );
 
-  // Step 3: Complete upload — share to channel
   const completeBody = JSON.stringify({
     files: [{ id: file_id, title }],
     channel_id: CHANNEL,
@@ -147,7 +143,7 @@ async function uploadImage(filePath, title, comment) {
   );
   const j3 = JSON.parse(r3.body);
   if (!j3.ok) throw new Error(`completeUploadExternal: ${j3.error}`);
-  console.log(`✅ Uploaded: ${title}`);
+  console.log(`  ✅ Posted: ${title}`);
 }
 
 // ── 3. Upload all 3 screenshots ───────────────────────────────────
@@ -156,32 +152,21 @@ async function uploadAllScreenshots(screenshots) {
     timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short'
   });
 
-  const tabEmojis = { 'Images': '🖼', 'Videos': '🎬', '360°': '🔁' };
-
   for (let i = 0; i < screenshots.length; i++) {
-    const { name, filePath } = screenshots[i];
-    const emoji = tabEmojis[name] || '📊';
+    const { name, filePath, emoji } = screenshots[i];
     const isFirst = i === 0;
 
-    // Only add the header mention on the first screenshot
     const comment = isFirst
       ? `🚨 *QC Pendency Report* | ${now} IST\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>\n\n${emoji} *${name} Pendency*\n\n<@U08VA3ARKLM> <@U098XR16D6U> <@U098QVB7BMF>`
       : `${emoji} *${name} Pendency*`;
 
-    await uploadImage(
-      filePath,
-      `QC ${name} Pendency · ${now} IST`,
-      comment
-    );
+    await uploadImage(filePath, `QC ${name} Pendency · ${now} IST`, comment);
 
-    // Small delay between uploads to avoid rate limits
-    if (i < screenshots.length - 1) {
-      await new Promise(r => setTimeout(r, 1500));
-    }
+    if (i < screenshots.length - 1) await new Promise(r => setTimeout(r, 1500));
   }
 }
 
-// ── 4. Webhook fallback (text only) ──────────────────────────────
+// ── 4. Webhook fallback ──────────────────────────────────────────
 async function sendWebhook() {
   if (!WEBHOOK) { console.log('⚠ No webhook configured'); return; }
   const now = new Date().toLocaleString('en-IN', {
@@ -196,7 +181,7 @@ async function sendWebhook() {
     { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
     payload
   );
-  console.log('Webhook:', r.status === 200 ? '✅ Sent' : `❌ ${r.status} ${r.body}`);
+  console.log('Webhook:', r.status === 200 ? '✅ Sent' : `❌ ${r.status}`);
 }
 
 // ── Main ──────────────────────────────────────────────────────────
@@ -209,18 +194,17 @@ async function sendWebhook() {
     if (BOT_TOKEN && CHANNEL) {
       try {
         await uploadAllScreenshots(screenshots);
-        console.log('\n✅ All 3 screenshots posted to Slack!\n');
+        console.log('\n✅ All 3 screenshots posted!\n');
         return;
       } catch (e) {
-        console.error('❌ Image upload failed:', e.message);
-        console.log('→ Falling back to webhook text message');
+        console.error('❌ Upload failed:', e.message);
+        console.log('→ Falling back to webhook');
       }
     } else {
       console.log('⚠ BOT_TOKEN or CHANNEL not set — using webhook fallback');
     }
 
     await sendWebhook();
-    console.log('\n✅ Done\n');
   } catch (err) {
     console.error('\n❌ Fatal:', err.message);
     process.exit(1);
