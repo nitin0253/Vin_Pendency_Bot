@@ -1,6 +1,7 @@
 const fs    = require('fs');
 const https = require('https');
 const path  = require('path');
+const sharp = require('sharp');
 
 const DASHBOARD_URL = 'https://spyne-qc-hub.vercel.app/';
 const BOT_TOKEN     = process.env.SLACK_BOT_TOKEN;
@@ -120,7 +121,51 @@ async function takeScreenshots() {
   return screenshots;
 }
 
-// ── 2. Upload one image to Slack ──────────────────────────────────
+// ── 2. Stitch 3 screenshots side-by-side into one image ──────────
+async function stitchScreenshots(screenshots) {
+  const LABEL_H  = 48;   // height of the label bar above each panel
+  const GAP      = 6;    // gap between panels
+  const SS_W     = 1600;
+  const SS_H     = 900;
+  const TOTAL_W  = SS_W * 3 + GAP * 2;
+  const TOTAL_H  = SS_H + LABEL_H;
+  const outPath  = path.join(process.cwd(), 'qc-combined.png');
+
+  // Build a dark background canvas with labels rendered via SVG overlay
+  const labelSvg = `
+    <svg width="${TOTAL_W}" height="${LABEL_H}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="${TOTAL_W}" height="${LABEL_H}" fill="#111317"/>
+      ${screenshots.map((t, i) => {
+        const x = i * (SS_W + GAP) + SS_W / 2;
+        return `<text x="${x}" y="32" text-anchor="middle"
+          font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#ffffff">
+          ${t.emoji} ${t.name} Pendency
+        </text>`;
+      }).join('')}
+    </svg>`;
+
+  const labelBuf = Buffer.from(labelSvg);
+
+  await sharp({
+    create: { width: TOTAL_W, height: TOTAL_H, channels: 4, background: { r: 17, g: 19, b: 23, alpha: 1 } }
+  })
+  .png()
+  .composite([
+    // Label bar at top
+    { input: labelBuf, top: 0, left: 0 },
+    // Three screenshots side by side below the label
+    { input: screenshots[0].filePath, top: LABEL_H, left: 0 },
+    { input: screenshots[1].filePath, top: LABEL_H, left: SS_W + GAP },
+    { input: screenshots[2].filePath, top: LABEL_H, left: (SS_W + GAP) * 2 },
+  ])
+  .toFile(outPath);
+
+  const kb = Math.round(fs.statSync(outPath).size / 1024);
+  console.log(`🖼 Combined image: qc-combined.png (${kb} KB)`);
+  return outPath;
+}
+
+// ── 3. Upload one image to Slack ──────────────────────────────────
 async function uploadImage(filePath, title, comment) {
   const img  = fs.readFileSync(filePath);
   const size = img.length;
@@ -164,21 +209,13 @@ async function uploadImage(filePath, title, comment) {
   console.log(`  ✅ Posted: ${title}`);
 }
 
-// ── 3. Upload all 3 ───────────────────────────────────────────────
-async function uploadAllScreenshots(screenshots) {
+// ── 4. Upload the combined image to Slack ────────────────────────
+async function uploadCombined(combinedPath) {
   const now = new Date().toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short'
   });
-
-  for (let i = 0; i < screenshots.length; i++) {
-    const { name, filePath, emoji } = screenshots[i];
-    const comment = i === 0
-      ? `🚨 *QC Pendency Report* | ${now} IST\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>\n\n${emoji} *${name} Pendency*\n\n<@U08VA3ARKLM> <@U098XR16D6U> <@U098QVB7BMF>`
-      : `${emoji} *${name} Pendency*`;
-
-    await uploadImage(filePath, `QC ${name} Pendency · ${now} IST`, comment);
-    if (i < screenshots.length - 1) await new Promise(r => setTimeout(r, 1500));
-  }
+  const comment = `🚨 *QC Pendency Report* | ${now} IST\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>\n\n🖼 Images  |  🎬 Videos  |  🔁 360°\n\n<@U08VA3ARKLM> <@U098XR16D6U> <@U098QVB7BMF>`;
+  await uploadImage(combinedPath, `QC Pendency Report · ${now} IST`, comment);
 }
 
 // ── 4. Webhook fallback ───────────────────────────────────────────
@@ -208,8 +245,9 @@ async function sendWebhook() {
 
     if (BOT_TOKEN && CHANNEL) {
       try {
-        await uploadAllScreenshots(screenshots);
-        console.log('\n✅ All 3 screenshots posted!\n');
+        const combinedPath = await stitchScreenshots(screenshots);
+        await uploadCombined(combinedPath);
+        console.log('\n✅ Combined screenshot posted!\n');
         return;
       } catch (e) {
         console.error('❌ Upload failed:', e.message);
