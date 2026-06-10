@@ -8,7 +8,7 @@ on:
 jobs:
   screenshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20  # increased from 15 — 3 tabs need more time
 
     steps:
       - name: Checkout
@@ -30,18 +30,21 @@ jobs:
           npm install
           npx puppeteer browsers install chrome
 
-      - name: Take screenshot & post to Slack
-        timeout-minutes: 8
+      - name: Take screenshots & post to Slack
+        timeout-minutes: 12  # increased from 8 — 3 tabs × ~3-4min each
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL:   ${{ secrets.SLACK_CHANNEL }}
           SLACK_WEBHOOK:   ${{ secrets.SLACK_WEBHOOK }}
         run: node screenshot-bot.js
 
-      - name: Upload artifact
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dashboard-screenshot
-          path: dashboard.png
+          name: dashboard-screenshots
+          path: |
+            qc-images.png
+            qc-videos.png
+            qc-360.png
           retention-days: 3
