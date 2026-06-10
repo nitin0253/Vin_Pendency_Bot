@@ -27,42 +27,32 @@ function httpsRequest(hostname, path, method, headers, body) {
   });
 }
 
-// ── Wait for loading to finish ────────────────────────────────────
-// Waits until:
-//   1. The "Loading..." / "FETCHING QC PENDING DATA" text is gone
-//   2. AND at least one numeric metric is visible on screen
+// ── Wait for loading spinner to disappear ─────────────────────────
+// Only checks that the loading text is gone — no DOM structure assumptions
 async function waitForDataLoaded(page, tabName, timeoutMs = 60000) {
-  console.log(`  ⏳ Waiting for data to load...`);
+  console.log(`  ⏳ Waiting for "${tabName}" data...`);
   const start = Date.now();
 
-  await page.waitForFunction(() => {
-    // Check loading indicators are gone
-    const bodyText = document.body.innerText;
-    const isLoading =
-      bodyText.includes('FETCHING QC PENDING DATA') ||
-      bodyText.includes('Loading...') ||
-      bodyText.includes('Fetching') ||
-      document.querySelector('.loading, .spinner, [class*="loading"], [class*="spinner"]') !== null;
+  try {
+    await page.waitForFunction(() => {
+      const text = document.body.innerText || '';
+      return (
+        !text.includes('FETCHING QC PENDING DATA') &&
+        !text.includes('Fetching') &&
+        !text.includes('Loading...')
+      );
+    }, { timeout: timeoutMs, polling: 500 });
 
-    if (isLoading) return false;
+    console.log(`  ✅ Loaded in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+  } catch (e) {
+    console.log(`  ⚠ Load wait timed out — taking screenshot anyway`);
+  }
 
-    // Check that at least one real number is visible (metric card)
-    const allEls = Array.from(document.querySelectorAll('*'));
-    const hasNumbers = allEls.some(el => {
-      if (el.children.length > 0) return false; // leaf nodes only
-      return /^\d+$/.test(el.textContent.trim());
-    });
-
-    return hasNumbers;
-  }, { timeout: timeoutMs, polling: 500 });
-
-  console.log(`  ✅ Data loaded in ${((Date.now() - start) / 1000).toFixed(1)}s`);
-
-  // Small extra settle for charts/animations to finish rendering
-  await new Promise(r => setTimeout(r, 2000));
+  // Let charts/animations finish rendering
+  await new Promise(r => setTimeout(r, 3000));
 }
 
-// ── 1. Take 3 screenshots (one per tab) ──────────────────────────
+// ── 1. Take 3 screenshots ─────────────────────────────────────────
 async function takeScreenshots() {
   const puppeteer = require('puppeteer');
   console.log('🌐 Launching browser...');
@@ -83,15 +73,14 @@ async function takeScreenshots() {
     // Force dark theme
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 
-    // Wait for the initial page load to finish (Images tab is default)
+    // Wait for the default Images tab to finish loading
     await waitForDataLoaded(page, 'Images');
 
     for (const tab of TABS) {
-      console.log(`\n🔖 Activating tab: ${tab.name}`);
+      console.log(`\n🔖 Tab: ${tab.name}`);
 
-      // Skip clicking for Images since it's already active on first load
       if (tab.dataId !== 'images') {
-        // Call activate() directly — mirrors onclick="activate('videos')"
+        // Call activate() directly — same as onclick="activate('videos')"
         const method = await page.evaluate((dataId) => {
           if (typeof activate === 'function') {
             activate(dataId);
@@ -101,28 +90,26 @@ async function takeScreenshots() {
           if (btn) { btn.click(); return 'btn.click()'; }
           return 'not found';
         }, tab.dataId);
-
         console.log(`  Method: ${method}`);
 
-        // Confirm the tab button itself went active
+        // Wait for this tab's button to become active
         try {
           await page.waitForFunction((dataId) => {
             const btn = document.querySelector(`button[data-id="${dataId}"]`);
             return btn && btn.classList.contains('active');
           }, { timeout: 10000 }, tab.dataId);
-          console.log(`  ✅ Tab button is active`);
         } catch {
-          console.log(`  ⚠ Tab active-class check timed out`);
+          console.log(`  ⚠ Active class check timed out`);
         }
 
-        // Now wait for the new tab's data to fully load
+        // Wait for loading spinner to clear
         await waitForDataLoaded(page, tab.name);
       }
 
       const filePath = path.join(process.cwd(), tab.file);
       await page.screenshot({ path: filePath, clip: { x: 0, y: 0, width: 1600, height: 900 } });
       const kb = Math.round(fs.statSync(filePath).size / 1024);
-      console.log(`  📸 Saved ${tab.file} (${kb} KB)`);
+      console.log(`  📸 ${tab.file} (${kb} KB)`);
       screenshots.push({ ...tab, filePath });
     }
   } finally {
@@ -132,7 +119,7 @@ async function takeScreenshots() {
   return screenshots;
 }
 
-// ── 2. Upload a single image to Slack ────────────────────────────
+// ── 2. Upload one image to Slack ──────────────────────────────────
 async function uploadImage(filePath, title, comment) {
   const img  = fs.readFileSync(filePath);
   const size = img.length;
@@ -148,7 +135,6 @@ async function uploadImage(filePath, title, comment) {
   if (!j1.ok) throw new Error(`getUploadURLExternal: ${j1.error}`);
 
   const { upload_url, file_id } = j1;
-
   const uploadParsed = new URL(upload_url);
   await httpsRequest(
     uploadParsed.hostname,
@@ -164,9 +150,7 @@ async function uploadImage(filePath, title, comment) {
     initial_comment: comment,
   });
   const r3 = await httpsRequest(
-    'slack.com',
-    '/api/files.completeUploadExternal',
-    'POST',
+    'slack.com', '/api/files.completeUploadExternal', 'POST',
     {
       'Authorization': `Bearer ${BOT_TOKEN}`,
       'Content-Type': 'application/json',
@@ -179,7 +163,7 @@ async function uploadImage(filePath, title, comment) {
   console.log(`  ✅ Posted: ${title}`);
 }
 
-// ── 3. Upload all 3 screenshots ───────────────────────────────────
+// ── 3. Upload all 3 ───────────────────────────────────────────────
 async function uploadAllScreenshots(screenshots) {
   const now = new Date().toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short'
@@ -187,9 +171,7 @@ async function uploadAllScreenshots(screenshots) {
 
   for (let i = 0; i < screenshots.length; i++) {
     const { name, filePath, emoji } = screenshots[i];
-    const isFirst = i === 0;
-
-    const comment = isFirst
+    const comment = i === 0
       ? `🚨 *QC Pendency Report* | ${now} IST\n<${DASHBOARD_URL}|🔗 Open Live Dashboard>\n\n${emoji} *${name} Pendency*\n\n<@U08VA3ARKLM> <@U098XR16D6U> <@U098QVB7BMF>`
       : `${emoji} *${name} Pendency*`;
 
@@ -198,7 +180,7 @@ async function uploadAllScreenshots(screenshots) {
   }
 }
 
-// ── 4. Webhook fallback ──────────────────────────────────────────
+// ── 4. Webhook fallback ───────────────────────────────────────────
 async function sendWebhook() {
   if (!WEBHOOK) { console.log('⚠ No webhook configured'); return; }
   const now = new Date().toLocaleString('en-IN', {
