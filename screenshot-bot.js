@@ -33,7 +33,7 @@ function httpsRequest(hostname, path, method, headers, body) {
 // ── Wait for loading to finish ────────────────────────────────────
 // Checks for ANY "fetching/loading" text — covers all tab variants:
 // "FETCHING QC PENDING DATA", "FETCHING VIDEO PENDENCY DATA", "Loading..." etc.
-async function waitForDataLoaded(page, tabName, timeoutMs = 45000) {
+async function waitForDataLoaded(page, tabName, timeoutMs = 60000) {
   console.log(`  ⏳ Waiting for "${tabName}" data...`);
   const start = Date.now();
 
@@ -128,6 +128,9 @@ async function takeScreenshots() {
         }
 
         if (tab.waitForData) {
+          // Short initial wait to let the tab's API fetch START and show its spinner,
+          // before we begin polling for it to disappear
+          await new Promise(r => setTimeout(r, 3000));
           await waitForDataLoaded(page, tab.name);
         } else {
           // 360° is "Coming soon" — no data to wait for
