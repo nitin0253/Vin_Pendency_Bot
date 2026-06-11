@@ -30,50 +30,20 @@ function httpsRequest(hostname, path, method, headers, body) {
   });
 }
 
-// ── Wait for loading to finish ────────────────────────────────────
-// Checks for ANY "fetching/loading" text — covers all tab variants:
-// "FETCHING QC PENDING DATA", "FETCHING VIDEO PENDENCY DATA", "Loading..." etc.
-async function waitForDataLoaded(page, tabName, timeoutMs = 60000) {
-  console.log(`  ⏳ Waiting for "${tabName}" data...`);
+// ── Wait for network idle after a tab switch ─────────────────────
+// After activate() fires an API call, we wait for network to go quiet.
+// This is the most reliable signal that data has finished loading.
+async function waitForNetworkIdle(page, tabName) {
+  console.log(`  ⏳ Waiting for "${tabName}" network idle...`);
   const start = Date.now();
-
   try {
-    await page.waitForFunction(() => {
-      const body = document.body;
-      if (!body) return false;
-
-      // Check spinner/loading elements are hidden
-      const spinners = body.querySelectorAll(
-        '.loading, .spinner, [class*="loading"], [class*="spinner"], [class*="fetching"]'
-      );
-      for (const el of spinners) {
-        const style = window.getComputedStyle(el);
-        if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-          return false;
-        }
-      }
-
-      // Check all leaf-node text — uppercase so it catches any case variant
-      const leafText = Array.from(body.querySelectorAll('*'))
-        .filter(el => el.children.length === 0)
-        .map(el => el.textContent.trim().toUpperCase())
-        .join(' ');
-
-      // Matches: "FETCHING QC PENDING DATA", "FETCHING VIDEO PENDENCY DATA", etc.
-      if (leafText.includes('FETCHING') || leafText.includes('LOADING...')) {
-        return false;
-      }
-
-      return true;
-    }, { timeout: timeoutMs, polling: 500 });
-
-    console.log(`  ✅ Loaded in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+    await page.waitForNetworkIdle({ idleTime: 1000, timeout: 30000 });
+    console.log(`  ✅ Network idle in ${((Date.now() - start) / 1000).toFixed(1)}s`);
   } catch (e) {
-    console.log(`  ⚠ Timed out after ${((Date.now() - start) / 1000).toFixed(1)}s — proceeding anyway`);
+    console.log(`  ⚠ Network idle timed out — proceeding`);
   }
-
-  // Let charts/animations finish rendering
-  await new Promise(r => setTimeout(r, 2500));
+  // Extra settle for rendering/animations
+  await new Promise(r => setTimeout(r, 3000));
 }
 
 // ── 1. Take 3 screenshots ─────────────────────────────────────────
@@ -92,13 +62,14 @@ async function takeScreenshots() {
     await page.setViewport({ width: SS_W, height: 900 });
 
     console.log('📡 Loading dashboard...');
+    // networkidle2 waits for the initial page + its API calls to finish
     await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     // Force dark theme
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 
-    // Wait for default Images tab to finish loading
-    await waitForDataLoaded(page, 'Images');
+    // Extra settle for the default Images tab
+    await new Promise(r => setTimeout(r, 5000));
 
     for (const tab of TABS) {
       console.log(`\n🔖 Tab: ${tab.name}`);
@@ -116,26 +87,13 @@ async function takeScreenshots() {
         }, tab.dataId);
         console.log(`  Method: ${method}`);
 
-        // Confirm the tab button became active
-        try {
-          await page.waitForFunction((dataId) => {
-            const btn = document.querySelector(`button[data-id="${dataId}"]`);
-            return btn && btn.classList.contains('active');
-          }, { timeout: 10000 }, tab.dataId);
-          console.log(`  ✅ Tab active`);
-        } catch {
-          console.log(`  ⚠ Active class check timed out`);
-        }
-
         if (tab.waitForData) {
-          // Short initial wait to let the tab's API fetch START and show its spinner,
-          // before we begin polling for it to disappear
-          await new Promise(r => setTimeout(r, 3000));
-          await waitForDataLoaded(page, tab.name);
+          // Wait for the API call triggered by activate() to complete
+          await waitForNetworkIdle(page, tab.name);
         } else {
-          // 360° is "Coming soon" — no data to wait for
-          console.log(`  ⏭ Coming Soon tab — skipping data wait`);
-          await new Promise(r => setTimeout(r, 1500));
+          // 360° is "Coming soon" — no API call, just wait for transition
+          console.log(`  ⏭ Coming Soon tab — short wait`);
+          await new Promise(r => setTimeout(r, 2000));
         }
       }
 
@@ -143,7 +101,7 @@ async function takeScreenshots() {
       const filePath = path.join(process.cwd(), tab.file);
       await page.screenshot({ path: filePath, clip: { x: 0, y: 0, width: SS_W, height: tab.cropH } });
       const kb = Math.round(fs.statSync(filePath).size / 1024);
-      console.log(`  📸 ${tab.file} — ${SS_W}×${tab.cropH}px (${kb} KB)`);
+      console.log(`  📸 ${tab.file} — ${SS_W}x${tab.cropH}px (${kb} KB)`);
       screenshots.push({ ...tab, filePath });
     }
   } finally {
