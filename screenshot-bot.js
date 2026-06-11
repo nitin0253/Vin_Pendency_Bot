@@ -11,8 +11,8 @@ const WEBHOOK       = process.env.SLACK_WEBHOOK;
 const SS_W = 1600;
 
 const TABS = [
-  { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼', waitForData: true,  cropH: 620 },
-  { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true,  cropH: 620 },
+  { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼', waitForData: true,  cropH: 600 },
+  { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true,  cropH: 600 },
   { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: false, cropH: 300 },
 ];
 
