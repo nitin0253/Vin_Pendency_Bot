@@ -13,7 +13,7 @@ const SS_W = 1600;
 const TABS = [
   { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼', waitForData: true,  cropH: 560 },
   { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true,  cropH: 560 },
-  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: false, cropH: 560 },
+  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: false, cropH: 300 },
 ];
 
 // ── HTTPS helper ──────────────────────────────────────────────────
@@ -30,20 +30,29 @@ function httpsRequest(hostname, path, method, headers, body) {
   });
 }
 
-// ── Wait for network idle after a tab switch ─────────────────────
-// After activate() fires an API call, we wait for network to go quiet.
-// This is the most reliable signal that data has finished loading.
-async function waitForNetworkIdle(page, tabName) {
-  console.log(`  ⏳ Waiting for "${tabName}" network idle...`);
-  const start = Date.now();
-  try {
-    await page.waitForNetworkIdle({ idleTime: 1000, timeout: 30000 });
-    console.log(`  ✅ Network idle in ${((Date.now() - start) / 1000).toFixed(1)}s`);
-  } catch (e) {
-    console.log(`  ⚠ Network idle timed out — proceeding`);
-  }
-  // Extra settle for rendering/animations
-  await new Promise(r => setTimeout(r, 3000));
+// ── Wait for a tab's data API response to complete ───────────────
+// Listens for the dashboard's fetch/XHR responses that contain data.
+// Falls back to a fixed wait if nothing fires within the timeout.
+function waitForDataResponse(page, timeoutMs = 30000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      page.off('response', handler);
+      resolve('timeout');
+    }, timeoutMs);
+
+    const handler = (response) => {
+      const url = response.url();
+      const status = response.status();
+      // Dashboard API calls are fetch/XHR — ignore static assets
+      const isAsset = /\.(js|css|png|jpg|svg|ico|woff|ttf)/.test(url);
+      if (!isAsset && status === 200 && url.includes('http')) {
+        clearTimeout(timer);
+        page.off('response', handler);
+        resolve(url);
+      }
+    };
+    page.on('response', handler);
+  });
 }
 
 // ── 1. Take 3 screenshots ─────────────────────────────────────────
@@ -62,36 +71,47 @@ async function takeScreenshots() {
     await page.setViewport({ width: SS_W, height: 900 });
 
     console.log('📡 Loading dashboard...');
-    // networkidle2 waits for the initial page + its API calls to finish
-    await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle0', timeout: 60000 });
+    // networkidle0 = zero active connections — ensures the initial data API
+    // call has fully completed before we do anything else
 
     // Force dark theme
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
-
-    // Extra settle for the default Images tab
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, 2000));
 
     for (const tab of TABS) {
       console.log(`\n🔖 Tab: ${tab.name}`);
 
       if (tab.dataId !== 'images') {
-        // Call activate() directly — mirrors onclick="activate('videos')"
-        const method = await page.evaluate((dataId) => {
-          if (typeof activate === 'function') {
-            activate(dataId);
-            return 'activate()';
-          }
-          const btn = document.querySelector(`button[data-id="${dataId}"]`);
-          if (btn) { btn.click(); return 'btn.click()'; }
-          return 'not found';
-        }, tab.dataId);
-        console.log(`  Method: ${method}`);
-
         if (tab.waitForData) {
-          // Wait for the API call triggered by activate() to complete
-          await waitForNetworkIdle(page, tab.name);
+          // Start listening for an API response BEFORE clicking
+          // so we don't miss it if the response comes back very fast
+          const responsePromise = waitForDataResponse(page, 25000);
+
+          const method = await page.evaluate((dataId) => {
+            if (typeof activate === 'function') { activate(dataId); return 'activate()'; }
+            const btn = document.querySelector(`button[data-id="${dataId}"]`);
+            if (btn) { btn.click(); return 'btn.click()'; }
+            return 'not found';
+          }, tab.dataId);
+          console.log(`  Method: ${method}`);
+
+          // Wait for the API response that means data is back
+          const resolved = await responsePromise;
+          console.log(`  ✅ Data response received: ${typeof resolved === 'string' && resolved !== 'timeout' ? resolved.substring(0, 80) : resolved}`);
+
+          // Extra settle for rendering
+          await new Promise(r => setTimeout(r, 3000));
+
         } else {
-          // 360° is "Coming soon" — no API call, just wait for transition
+          // 360° is "Coming soon" — no API call
+          const method = await page.evaluate((dataId) => {
+            if (typeof activate === 'function') { activate(dataId); return 'activate()'; }
+            const btn = document.querySelector(`button[data-id="${dataId}"]`);
+            if (btn) { btn.click(); return 'btn.click()'; }
+            return 'not found';
+          }, tab.dataId);
+          console.log(`  Method: ${method}`);
           console.log(`  ⏭ Coming Soon tab — short wait`);
           await new Promise(r => setTimeout(r, 2000));
         }
