@@ -57,9 +57,45 @@ function waitForDataResponse(page, timeoutMs = 30000) {
   });
 }
 
+// ── Pre-warm the Vercel API cache before loading the dashboard ────
+// The dashboard fetches from /api/data (images) and /api/videos (or similar).
+// Hitting these from Node first ensures the Vercel serverless cache is hot,
+// so when Puppeteer loads the page the data is ready immediately.
+async function prewarmCache() {
+  // Try all likely API route names — the ones that return data (200 + JSON body)
+  // are the real endpoints. Logs will show which ones work.
+  const endpoints = [
+    `${DASHBOARD_URL}api/data`,          // likely images (data.js)
+    `${DASHBOARD_URL}api/videos`,        // likely videos
+    `${DASHBOARD_URL}api/video`,
+    `${DASHBOARD_URL}api/image`,
+    `${DASHBOARD_URL}api/images`,
+    `${DASHBOARD_URL}api/qc`,
+  ];
+  console.log('🔥 Pre-warming API cache...');
+  for (const url of endpoints) {
+    try {
+      const u = new URL(url);
+      const r = await httpsRequest(u.hostname, u.pathname + u.search, 'GET', {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      }, null);
+      console.log(`  ${u.pathname}: ${r.status} (${r.body.length} bytes)`);
+    } catch (e) {
+      console.log(`  ${url}: error — ${e.message}`);
+    }
+  }
+  // Give Vercel a moment to settle after cache warm
+  await new Promise(r => setTimeout(r, 2000));
+}
+
 // ── 1. Take 3 screenshots ─────────────────────────────────────────
 async function takeScreenshots() {
   const puppeteer = require('puppeteer');
+
+  // Pre-warm the API cache BEFORE launching the browser
+  await prewarmCache();
+
   console.log('🌐 Launching browser...');
   const browser = await puppeteer.launch({
     headless: true,
