@@ -61,7 +61,14 @@ async function takeScreenshots() {
   console.log('🌐 Launching browser...');
   const browser = await puppeteer.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-zygote',
+      '--disable-blink-features=AutomationControlled', // hides navigator.webdriver flag
+    ],
   });
 
   const screenshots = [];
@@ -70,13 +77,31 @@ async function takeScreenshots() {
     const page = await browser.newPage();
     await page.setViewport({ width: SS_W, height: 900 });
 
+    // Spoof a real Chrome user-agent + hide all headless/automation signals
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    );
+    // Remove navigator.webdriver which headless Chrome sets to true
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+
+    // Set headers that a real browser sends — helps with API CORS/referrer checks
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    });
+
     console.log('📡 Loading dashboard...');
     await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle0', timeout: 60000 });
-    // networkidle0 = zero active connections — ensures the initial data API
-    // call has fully completed before we do anything else
 
     // Force dark theme
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+
+    // Log what state the Images tab is in (helps debug if API still fails)
+    const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
+    console.log('  Page state after load:', bodySnippet.replace(/\n/g, ' '));
+
     await new Promise(r => setTimeout(r, 2000));
 
     for (const tab of TABS) {
