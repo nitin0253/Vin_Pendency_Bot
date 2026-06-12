@@ -43,9 +43,11 @@ function waitForDataResponse(page, timeoutMs = 30000) {
     const handler = (response) => {
       const url = response.url();
       const status = response.status();
-      // Dashboard API calls are fetch/XHR — ignore static assets
-      const isAsset = /\.(js|css|png|jpg|svg|ico|woff|ttf)/.test(url);
-      if (!isAsset && status === 200 && url.includes('http')) {
+      // Ignore static assets and other Vercel apps — only care about XHR/fetch data calls
+      const isAsset    = /\.(js|css|png|jpg|jpeg|svg|ico|woff|woff2|ttf|map)($|\?)/.test(url);
+      const isOtherApp = url.includes('vin-tracker-delivery') || url.includes('vercel.live');
+      const isHtml     = response.headers()['content-type']?.includes('text/html');
+      if (!isAsset && !isOtherApp && !isHtml && status === 200) {
         clearTimeout(timer);
         page.off('response', handler);
         resolve(url);
