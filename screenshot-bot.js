@@ -13,7 +13,7 @@ const SS_W = 1600;
 const TABS = [
   { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼', waitForData: true,  cropH: 560 },
   { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true,  cropH: 560 },
-  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: false, cropH: 560 },
+  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: false, cropH: 300 },
 ];
 
 // ── HTTPS helper ──────────────────────────────────────────────────
@@ -43,59 +43,27 @@ function waitForDataResponse(page, timeoutMs = 30000) {
     const handler = (response) => {
       const url = response.url();
       const status = response.status();
-      // Ignore static assets and other Vercel apps — only care about XHR/fetch data calls
-      const isAsset    = /\.(js|css|png|jpg|jpeg|svg|ico|woff|woff2|ttf|map)($|\?)/.test(url);
-      const isOtherApp = url.includes('vin-tracker-delivery') || url.includes('vercel.live');
-      const isHtml     = response.headers()['content-type']?.includes('text/html');
-      if (!isAsset && !isOtherApp && !isHtml && status === 200) {
-        clearTimeout(timer);
-        page.off('response', handler);
-        resolve(url);
-      }
+      const ct = response.headers()['content-type'] || '';
+
+      // Must be a real HTTP URL (not data: blob: etc.)
+      if (!url.startsWith('http')) return;
+      // Must be a JSON response — the actual data API returns application/json
+      if (!ct.includes('application/json')) return;
+      // Ignore other apps
+      if (url.includes('vin-tracker-delivery') || url.includes('vercel.live')) return;
+      if (status !== 200) return;
+
+      clearTimeout(timer);
+      page.off('response', handler);
+      resolve(url);
     };
     page.on('response', handler);
   });
 }
 
-// ── Pre-warm the Vercel API cache before loading the dashboard ────
-// The dashboard fetches from /api/data (images) and /api/videos (or similar).
-// Hitting these from Node first ensures the Vercel serverless cache is hot,
-// so when Puppeteer loads the page the data is ready immediately.
-async function prewarmCache() {
-  // Try all likely API route names — the ones that return data (200 + JSON body)
-  // are the real endpoints. Logs will show which ones work.
-  const endpoints = [
-    `${DASHBOARD_URL}api/data`,          // likely images (data.js)
-    `${DASHBOARD_URL}api/videos`,        // likely videos
-    `${DASHBOARD_URL}api/video`,
-    `${DASHBOARD_URL}api/image`,
-    `${DASHBOARD_URL}api/images`,
-    `${DASHBOARD_URL}api/qc`,
-  ];
-  console.log('🔥 Pre-warming API cache...');
-  for (const url of endpoints) {
-    try {
-      const u = new URL(url);
-      const r = await httpsRequest(u.hostname, u.pathname + u.search, 'GET', {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-      }, null);
-      console.log(`  ${u.pathname}: ${r.status} (${r.body.length} bytes)`);
-    } catch (e) {
-      console.log(`  ${url}: error — ${e.message}`);
-    }
-  }
-  // Give Vercel a moment to settle after cache warm
-  await new Promise(r => setTimeout(r, 2000));
-}
-
 // ── 1. Take 3 screenshots ─────────────────────────────────────────
 async function takeScreenshots() {
   const puppeteer = require('puppeteer');
-
-  // Pre-warm the API cache BEFORE launching the browser
-  await prewarmCache();
-
   console.log('🌐 Launching browser...');
   const browser = await puppeteer.launch({
     headless: true,
