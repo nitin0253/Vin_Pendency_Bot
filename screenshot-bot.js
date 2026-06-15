@@ -13,7 +13,7 @@ const SS_W = 1600;
 const TABS = [
   { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼', waitForData: true,  cropH: 560 },
   { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true,  cropH: 560 },
-  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: false, cropH: 560 },
+  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: true, cropH: 560 },
 ];
 
 // ── HTTPS helper ──────────────────────────────────────────────────
