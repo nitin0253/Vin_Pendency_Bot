@@ -13,7 +13,7 @@ const SS_W = 1600;
 const TABS = [
   { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼', waitForData: true,  cropH: 560 },
   { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true,  cropH: 560 },
-  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: true, cropH: 560 },
+  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: true,  cropH: 560 },
 ];
 
 // ── HTTPS helper ──────────────────────────────────────────────────
@@ -31,8 +31,6 @@ function httpsRequest(hostname, path, method, headers, body) {
 }
 
 // ── Wait for a tab's data API response to complete ───────────────
-// Listens for the dashboard's fetch/XHR responses that contain data.
-// Falls back to a fixed wait if nothing fires within the timeout.
 function waitForDataResponse(page, timeoutMs = 30000) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -45,11 +43,8 @@ function waitForDataResponse(page, timeoutMs = 30000) {
       const status = response.status();
       const ct = response.headers()['content-type'] || '';
 
-      // Must be a real HTTP URL (not data: blob: etc.)
       if (!url.startsWith('http')) return;
-      // Must be a JSON response — the actual data API returns application/json
       if (!ct.includes('application/json')) return;
-      // Ignore other apps
       if (url.includes('vin-tracker-delivery') || url.includes('vercel.live')) return;
       if (status !== 200) return;
 
@@ -58,6 +53,30 @@ function waitForDataResponse(page, timeoutMs = 30000) {
       resolve(url);
     };
     page.on('response', handler);
+  });
+}
+
+// ── Block non-essential requests to cut data transfer per run ────
+// Keeps: document, script, xhr/fetch (need JS + API data), and same-origin
+// stylesheets (need layout for an accurate screenshot).
+// Blocks: fonts, media, and any third-party image/font/tracking requests —
+// none of these affect what the screenshot needs to look like.
+function enableRequestInterception(page) {
+  page.on('request', (req) => {
+    const type = req.resourceType();
+    const url = req.url();
+    const isSameOrigin = url.startsWith(DASHBOARD_URL) || url.startsWith(DASHBOARD_URL.replace(/\/$/, ''));
+
+    if (type === 'font' || type === 'media') {
+      return req.abort();
+    }
+    if (type === 'image' && !isSameOrigin) {
+      return req.abort();
+    }
+    if (/google-analytics|googletagmanager|segment\.io|hotjar|mixpanel|sentry\.io|intercom|drift\.com/.test(url)) {
+      return req.abort();
+    }
+    req.continue();
   });
 }
 
@@ -73,7 +92,7 @@ async function takeScreenshots() {
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--no-zygote',
-      '--disable-blink-features=AutomationControlled', // hides navigator.webdriver flag
+      '--disable-blink-features=AutomationControlled',
     ],
   });
 
@@ -83,28 +102,27 @@ async function takeScreenshots() {
     const page = await browser.newPage();
     await page.setViewport({ width: SS_W, height: 900 });
 
-    // Spoof a real Chrome user-agent + hide all headless/automation signals
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
-    // Remove navigator.webdriver which headless Chrome sets to true
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
 
-    // Set headers that a real browser sends — helps with API CORS/referrer checks
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     });
 
+    // Must come before any navigation
+    await page.setRequestInterception(true);
+    enableRequestInterception(page);
+
     console.log('📡 Loading dashboard...');
     await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle0', timeout: 60000 });
 
-    // Force dark theme
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 
-    // Log what state the Images tab is in (helps debug if API still fails)
     const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
     console.log('  Page state after load:', bodySnippet.replace(/\n/g, ' '));
 
@@ -115,8 +133,6 @@ async function takeScreenshots() {
 
       if (tab.dataId !== 'images') {
         if (tab.waitForData) {
-          // Start listening for an API response BEFORE clicking
-          // so we don't miss it if the response comes back very fast
           const responsePromise = waitForDataResponse(page, 25000);
 
           const method = await page.evaluate((dataId) => {
@@ -127,28 +143,13 @@ async function takeScreenshots() {
           }, tab.dataId);
           console.log(`  Method: ${method}`);
 
-          // Wait for the API response that means data is back
           const resolved = await responsePromise;
           console.log(`  ✅ Data response received: ${typeof resolved === 'string' && resolved !== 'timeout' ? resolved.substring(0, 80) : resolved}`);
 
-          // Extra settle for rendering
           await new Promise(r => setTimeout(r, 3000));
-
-        } else {
-          // 360° is "Coming soon" — no API call
-          const method = await page.evaluate((dataId) => {
-            if (typeof activate === 'function') { activate(dataId); return 'activate()'; }
-            const btn = document.querySelector(`button[data-id="${dataId}"]`);
-            if (btn) { btn.click(); return 'btn.click()'; }
-            return 'not found';
-          }, tab.dataId);
-          console.log(`  Method: ${method}`);
-          console.log(`  ⏭ Coming Soon tab — short wait`);
-          await new Promise(r => setTimeout(r, 2000));
         }
       }
 
-      // Crop to per-tab height — Images/Videos: full content; 360°: short
       const filePath = path.join(process.cwd(), tab.file);
       await page.screenshot({ path: filePath, clip: { x: 0, y: 0, width: SS_W, height: tab.cropH } });
       const kb = Math.round(fs.statSync(filePath).size / 1024);
@@ -168,14 +169,12 @@ async function stitchScreenshots(screenshots) {
   const GAP     = 8;
   const outPath = path.join(process.cwd(), 'qc-combined.png');
 
-  // Total height = sum of each panel's (label + screenshot + gap), minus last gap
   const TOTAL_H = screenshots.reduce((sum, t) => sum + LABEL_H + t.cropH + GAP, 0) - GAP;
 
   const composites = [];
   let yOffset = 0;
 
   for (const tab of screenshots) {
-    // Label bar for this panel
     const labelSvg = Buffer.from(
       `<svg width="${SS_W}" height="${LABEL_H}" xmlns="http://www.w3.org/2000/svg">
         <rect width="${SS_W}" height="${LABEL_H}" fill="#1a1d23"/>
