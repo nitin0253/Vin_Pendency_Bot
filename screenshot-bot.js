@@ -10,6 +10,11 @@ const WEBHOOK       = process.env.SLACK_WEBHOOK;
 
 const SS_W = 1600;
 
+// The Images tab embeds this dashboard; its /api/data can be slow (~60s, ~11MB)
+// or return HTTP 500. We wait for it explicitly (bounded) instead of relying on
+// networkidle0, which never settles while that request is in flight.
+const IMAGES_API_HOST = 'vin-tracker-delivery.vercel.app';
+
 const TABS = [
   { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼', waitForData: true,  cropH: 560 },
   { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true,  cropH: 560 },
@@ -57,10 +62,6 @@ function waitForDataResponse(page, timeoutMs = 30000) {
 }
 
 // ── Block non-essential requests to cut data transfer per run ────
-// Keeps: document, script, xhr/fetch (need JS + API data), and same-origin
-// stylesheets (need layout for an accurate screenshot).
-// Blocks: fonts, media, and any third-party image/font/tracking requests —
-// none of these affect what the screenshot needs to look like.
 function enableRequestInterception(page) {
   page.on('request', (req) => {
     const type = req.resourceType();
@@ -80,8 +81,8 @@ function enableRequestInterception(page) {
   });
 }
 
-// ── 1. Take 3 screenshots ─────────────────────────────────────────
-async function takeScreenshots() {
+// ── 1a. Take 3 screenshots (single attempt) ───────────────────────
+async function takeScreenshotsOnce() {
   const puppeteer = require('puppeteer');
   console.log('🌐 Launching browser...');
   const browser = await puppeteer.launch({
@@ -119,14 +120,30 @@ async function takeScreenshots() {
     enableRequestInterception(page);
 
     console.log('📡 Loading dashboard...');
-    await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle0', timeout: 80000 });
+    // Don't gate the whole load on networkidle0: the embedded dashboards keep
+    // live connections and the Images /api/data can take ~60s (~11MB) or 500,
+    // so the network never goes idle within budget. Instead: load the shell
+    // fast, then wait (bounded) for the Images data — but never let a slow or
+    // failing upstream abort the run; we screenshot best-effort either way.
+    const imagesDataPromise = page
+      .waitForResponse(
+        r => r.url().includes(IMAGES_API_HOST) && r.url().includes('/api/data'),
+        { timeout: 90000 }
+      )
+      .then(r => `HTTP ${r.status()}`)
+      .catch(() => 'timeout');
+
+    await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+
+    const imagesData = await imagesDataPromise;
+    console.log(`  Images data: ${imagesData}`);
 
     const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
     console.log('  Page state after load:', bodySnippet.replace(/\n/g, ' '));
 
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 4000));
 
     for (const tab of TABS) {
       console.log(`\n🔖 Tab: ${tab.name}`);
@@ -161,6 +178,22 @@ async function takeScreenshots() {
   }
 
   return screenshots;
+}
+
+// ── 1b. Retry wrapper — ride out intermittent upstream slowness/500s ──
+async function takeScreenshots(maxAttempts = 3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      console.log(`\n🔁 Screenshot attempt ${attempt}/${maxAttempts}`);
+      return await takeScreenshotsOnce();
+    } catch (err) {
+      lastErr = err;
+      console.error(`⚠ Attempt ${attempt} failed: ${err.message}`);
+      if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+  throw lastErr;
 }
 
 // ── 2. Stitch screenshots vertically ─────────────────────────────
