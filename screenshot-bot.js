@@ -119,14 +119,14 @@ async function takeScreenshots() {
     enableRequestInterception(page);
 
     console.log('📡 Loading dashboard...');
-    await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle0', timeout: 60000 });
+    await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle0', timeout: 80000 });
 
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 
     const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
     console.log('  Page state after load:', bodySnippet.replace(/\n/g, ' '));
 
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 3000));
 
     for (const tab of TABS) {
       console.log(`\n🔖 Tab: ${tab.name}`);
