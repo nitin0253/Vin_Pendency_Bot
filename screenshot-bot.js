@@ -81,9 +81,26 @@ function enableRequestInterception(page) {
   });
 }
 
+// ── Pre-warm the VIN-Tracker cache so the dashboard loads instantly ──
+async function warmImageCache() {
+  console.log('🔥 Pre-warming VIN-Tracker cache...');
+  try {
+    const r = await httpsRequest(IMAGES_API_HOST, '/api/data?force=1', 'GET',
+      { 'User-Agent': 'QC-Bot/1.0' }, null);
+    console.log(`  Warm response: HTTP ${r.status} (${r.body.length} bytes)`);
+    return r.status;
+  } catch (e) {
+    console.warn(`  Warm failed: ${e.message}`);
+    return 0;
+  }
+}
+
 // ── 1a. Take 3 screenshots (single attempt) ───────────────────────
 async function takeScreenshotsOnce() {
   const puppeteer = require('puppeteer');
+
+  await warmImageCache();
+
   console.log('🌐 Launching browser...');
   const browser = await puppeteer.launch({
     headless: true,
@@ -120,25 +137,57 @@ async function takeScreenshotsOnce() {
     enableRequestInterception(page);
 
     console.log('📡 Loading dashboard...');
-    // Don't gate the whole load on networkidle0: the embedded dashboards keep
-    // live connections and the Images /api/data can take ~60s (~11MB) or 500,
-    // so the network never goes idle within budget. Instead: load the shell
-    // fast, then wait (bounded) for the Images data — but never let a slow or
-    // failing upstream abort the run; we screenshot best-effort either way.
     const imagesDataPromise = page
       .waitForResponse(
         r => r.url().includes(IMAGES_API_HOST) && r.url().includes('/api/data'),
         { timeout: 90000 }
       )
-      .then(r => `HTTP ${r.status()}`)
-      .catch(() => 'timeout');
+      .then(r => ({ status: r.status(), url: r.url() }))
+      .catch(() => ({ status: 0, url: 'timeout' }));
 
     await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 
     const imagesData = await imagesDataPromise;
-    console.log(`  Images data: ${imagesData}`);
+    console.log(`  Images data: HTTP ${imagesData.status}`);
+
+    // If the API returned an error, reload once — the pre-warm or cron should
+    // have populated the CDN cache by now.
+    if (imagesData.status !== 200) {
+      console.log('  ⚠ Non-200 — reloading to pick up warmed cache...');
+      await new Promise(r => setTimeout(r, 5000));
+      const retryPromise = page
+        .waitForResponse(
+          r => r.url().includes(IMAGES_API_HOST) && r.url().includes('/api/data'),
+          { timeout: 90000 }
+        )
+        .then(r => r.status())
+        .catch(() => 0);
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+      const retryStatus = await retryPromise;
+      console.log(`  Retry: HTTP ${retryStatus}`);
+    }
+
+    // Wait for the Images dashboard to actually render data (the #dash element
+    // becomes visible only after successful fetch + processData).
+    try {
+      await page.waitForFunction(() => {
+        const frames = document.querySelectorAll('iframe');
+        for (const f of frames) {
+          try {
+            const dash = f.contentDocument && f.contentDocument.getElementById('dash');
+            if (dash && dash.style.display !== 'none') return true;
+          } catch(e) {}
+        }
+        const dash = document.getElementById('dash');
+        return dash && dash.style.display !== 'none';
+      }, { timeout: 15000 });
+      console.log('  ✅ Dashboard rendered');
+    } catch(e) {
+      console.warn('  ⚠ Dashboard did not render in time, screenshotting as-is');
+    }
 
     const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
     console.log('  Page state after load:', bodySnippet.replace(/\n/g, ' '));
