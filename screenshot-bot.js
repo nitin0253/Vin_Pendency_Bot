@@ -35,6 +35,44 @@ function httpsRequest(hostname, path, method, headers, body) {
   });
 }
 
+// ── Force light theme on the shell + every (cross-origin) iframe ──
+// The outer shell (spyne-qc-hub) is hardcoded dark CSS, so we inject an
+// override stylesheet. The 3 inner iframes support `data-theme="light"`.
+const SHELL_LIGHT_CSS = `
+  html,body{background:#f4f5fa !important;color:#090c1a !important;}
+  .hdr{background:#eef0f8 !important;border-bottom:1px solid #dde1f0 !important;}
+  .tab{color:#3d4568 !important;}
+  .tab:hover{color:#090c1a !important;background:rgba(58,92,240,.06) !important;}
+  .tab.active{color:#3a5cf0 !important;background:rgba(58,92,240,.1) !important;border-color:rgba(58,92,240,.3) !important;}
+  iframe{background:#f4f5fa !important;}
+  .soon,.frame-wrap{background:#f4f5fa !important;}
+`;
+
+async function applyLightTheme(page) {
+  // Outer shell
+  try {
+    await page.addStyleTag({ content: SHELL_LIGHT_CSS });
+  } catch(e) {}
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-theme', 'light');
+    try { localStorage.setItem('qc-theme', 'light'); } catch(e) {}
+    try { localStorage.setItem('vpend-theme', 'light'); } catch(e) {}
+  });
+  // Each iframe (cross-origin — reach via page.frames())
+  for (const f of page.frames()) {
+    if (f === page.mainFrame()) continue;
+    try {
+      await f.evaluate(() => {
+        document.documentElement.setAttribute('data-theme', 'light');
+        try { localStorage.setItem('qc-theme', 'light'); } catch(e) {}
+        try { localStorage.setItem('vpend-theme', 'light'); } catch(e) {}
+        const btn = document.getElementById('tbtn');
+        if (btn) btn.textContent = '☀️';
+      });
+    } catch(e) {}
+  }
+}
+
 // ── Wait for a tab's data API response to complete ───────────────
 function waitForDataResponse(page, timeoutMs = 30000) {
   return new Promise((resolve) => {
@@ -147,7 +185,7 @@ async function takeScreenshotsOnce() {
 
     await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await applyLightTheme(page);
 
     const imagesData = await imagesDataPromise;
     console.log(`  Images data: HTTP ${imagesData.status}`);
@@ -165,7 +203,7 @@ async function takeScreenshotsOnce() {
         .then(r => r.status())
         .catch(() => 0);
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+      await applyLightTheme(page);
       const retryStatus = await retryPromise;
       console.log(`  Retry: HTTP ${retryStatus}`);
     }
@@ -213,6 +251,10 @@ async function takeScreenshotsOnce() {
           console.log(`  ✅ Data response received: ${typeof resolved === 'string' && resolved !== 'timeout' ? resolved.substring(0, 80) : resolved}`);
 
           await new Promise(r => setTimeout(r, 3000));
+
+          // Lazy-loaded iframes (videos/360) just became live — re-apply light theme
+          await applyLightTheme(page);
+          await new Promise(r => setTimeout(r, 500));
         }
       }
 
@@ -259,9 +301,9 @@ async function stitchScreenshots(screenshots) {
   for (const tab of screenshots) {
     const labelSvg = Buffer.from(
       `<svg width="${SS_W}" height="${LABEL_H}" xmlns="http://www.w3.org/2000/svg">
-        <rect width="${SS_W}" height="${LABEL_H}" fill="#1a1d23"/>
+        <rect width="${SS_W}" height="${LABEL_H}" fill="#eef0f8"/>
         <text x="800" y="30" text-anchor="middle"
-          font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#ffffff">
+          font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#090c1a">
           ${tab.emoji}  ${tab.name} Pendency
         </text>
       </svg>`
@@ -273,7 +315,7 @@ async function stitchScreenshots(screenshots) {
   }
 
   await sharp({
-    create: { width: SS_W, height: TOTAL_H, channels: 4, background: { r: 17, g: 19, b: 23, alpha: 1 } }
+    create: { width: SS_W, height: TOTAL_H, channels: 4, background: { r: 244, g: 245, b: 250, alpha: 1 } }
   })
   .png()
   .composite(composites)
