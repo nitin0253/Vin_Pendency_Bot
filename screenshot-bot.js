@@ -15,11 +15,20 @@ const SS_W = 1600;
 // networkidle0, which never settles while that request is in flight.
 const IMAGES_API_HOST = 'vin-tracker-delivery.vercel.app';
 
+// Each tab's iframe lives on its own origin. frameHostMatch is used to look
+// the frame up via page.frames() (same-origin iframes aren't accessible via
+// document.querySelectorAll from the shell).
 const TABS = [
-  { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼', waitForData: true,  cropH: 560 },
-  { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true,  cropH: 560 },
-  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: true,  cropH: 560 },
+  { name: 'Images', dataId: 'images', file: 'qc-images.png', emoji: '🖼', waitForData: true, cropH: 560,
+    frameHostMatch: 'vin-tracker-delivery' },
+  { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true, cropH: 560,
+    frameHostMatch: 'video-tracker-delivery' },
+  { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: true, cropH: 560,
+    frameHostMatch: '360-qc-pendency' },
 ];
+
+// How long (ms) to wait per tab for #loading → #dash and real numbers to render.
+const TAB_READY_TIMEOUT_MS = 60000;
 
 // ── HTTPS helper ──────────────────────────────────────────────────
 function httpsRequest(hostname, path, method, headers, body) {
@@ -73,30 +82,69 @@ async function applyLightTheme(page) {
   }
 }
 
-// ── Wait for a tab's data API response to complete ───────────────
-function waitForDataResponse(page, timeoutMs = 30000) {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      page.off('response', handler);
-      resolve('timeout');
-    }, timeoutMs);
+// ── Find the live Puppeteer Frame for a given tab ───────────────
+// Each tab is a cross-origin iframe; page.frames() reaches across origins
+// (document.contentDocument from the shell page does NOT — that's what the
+// earlier version silently fell through, screenshotting the loading screen).
+function findTabFrame(page, hostMatch) {
+  for (const f of page.frames()) {
+    if (f === page.mainFrame()) continue;
+    if (f.url().includes(hostMatch)) return f;
+  }
+  return null;
+}
 
-    const handler = (response) => {
-      const url = response.url();
-      const status = response.status();
-      const ct = response.headers()['content-type'] || '';
+// ── Wait until an iframe actually shows real data, not the spinner ──
+// Each inner dashboard flips #loading → display:none and #dash → display:block
+// only after its /api/data fetch + processData() finish. We poll that state
+// AND confirm at least one metric card has rendered text — belt-and-braces
+// against a race where #dash is shown but numbers haven't painted yet.
+async function waitForTabReady(page, tab, timeoutMs = TAB_READY_TIMEOUT_MS) {
+  const start = Date.now();
+  let lastReason = 'frame-not-found';
 
-      if (!url.startsWith('http')) return;
-      if (!ct.includes('application/json')) return;
-      if (url.includes('vin-tracker-delivery') || url.includes('vercel.live')) return;
-      if (status !== 200) return;
+  while (Date.now() - start < timeoutMs) {
+    const frame = findTabFrame(page, tab.frameHostMatch);
+    if (!frame) {
+      lastReason = 'frame-not-found';
+      await new Promise(r => setTimeout(r, 500));
+      continue;
+    }
 
-      clearTimeout(timer);
-      page.off('response', handler);
-      resolve(url);
-    };
-    page.on('response', handler);
-  });
+    try {
+      const state = await frame.evaluate(() => {
+        const loading = document.getElementById('loading');
+        const dash    = document.getElementById('dash');
+        if (!loading || !dash) return { ready: false, reason: 'elements-missing' };
+
+        const loadingDisp = (loading.style.display || getComputedStyle(loading).display);
+        const dashDisp    = (dash.style.display    || getComputedStyle(dash).display);
+        if (loadingDisp !== 'none')      return { ready: false, reason: 'loading-visible' };
+        if (dashDisp === 'none')         return { ready: false, reason: 'dash-hidden'   };
+
+        // Numbers painted? Any metric/stat/hour card with non-empty text is enough.
+        // We DON'T require >0 — a true zero count is a legitimate rendered state.
+        const vals = dash.querySelectorAll('.metric-val, .stat-card-val, .hcard-n');
+        if (vals.length === 0) return { ready: false, reason: 'no-value-nodes' };
+        const painted = Array.from(vals).some(el => (el.textContent || '').trim().length > 0);
+        return painted
+          ? { ready: true,  reason: 'ok', count: vals.length }
+          : { ready: false, reason: 'values-empty' };
+      });
+
+      if (state.ready) {
+        console.log(`  ✅ ${tab.name} ready (${state.count} value nodes rendered)`);
+        return true;
+      }
+      lastReason = state.reason;
+    } catch (e) {
+      // Frame can navigate / detach while we poll — treat as still-loading.
+      lastReason = `evaluate-error:${e.message.slice(0, 60)}`;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  throw new Error(`${tab.name} tab did not render within ${timeoutMs}ms (last: ${lastReason})`);
 }
 
 // ── Block non-essential requests to cut data transfer per run ────
@@ -208,55 +256,30 @@ async function takeScreenshotsOnce() {
       console.log(`  Retry: HTTP ${retryStatus}`);
     }
 
-    // Wait for the Images dashboard to actually render data (the #dash element
-    // becomes visible only after successful fetch + processData).
-    try {
-      await page.waitForFunction(() => {
-        const frames = document.querySelectorAll('iframe');
-        for (const f of frames) {
-          try {
-            const dash = f.contentDocument && f.contentDocument.getElementById('dash');
-            if (dash && dash.style.display !== 'none') return true;
-          } catch(e) {}
-        }
-        const dash = document.getElementById('dash');
-        return dash && dash.style.display !== 'none';
-      }, { timeout: 15000 });
-      console.log('  ✅ Dashboard rendered');
-    } catch(e) {
-      console.warn('  ⚠ Dashboard did not render in time, screenshotting as-is');
-    }
-
-    const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
-    console.log('  Page state after load:', bodySnippet.replace(/\n/g, ' '));
-
-    await new Promise(r => setTimeout(r, 4000));
-
     for (const tab of TABS) {
       console.log(`\n🔖 Tab: ${tab.name}`);
 
       if (tab.dataId !== 'images') {
-        if (tab.waitForData) {
-          const responsePromise = waitForDataResponse(page, 25000);
-
-          const method = await page.evaluate((dataId) => {
-            if (typeof activate === 'function') { activate(dataId); return 'activate()'; }
-            const btn = document.querySelector(`button[data-id="${dataId}"]`);
-            if (btn) { btn.click(); return 'btn.click()'; }
-            return 'not found';
-          }, tab.dataId);
-          console.log(`  Method: ${method}`);
-
-          const resolved = await responsePromise;
-          console.log(`  ✅ Data response received: ${typeof resolved === 'string' && resolved !== 'timeout' ? resolved.substring(0, 80) : resolved}`);
-
-          await new Promise(r => setTimeout(r, 3000));
-
-          // Lazy-loaded iframes (videos/360) just became live — re-apply light theme
-          await applyLightTheme(page);
-          await new Promise(r => setTimeout(r, 500));
-        }
+        // Switch to the tab in the shell; the iframe lazy-loads its src here.
+        const method = await page.evaluate((dataId) => {
+          if (typeof activate === 'function') { activate(dataId); return 'activate()'; }
+          const btn = document.querySelector(`button[data-id="${dataId}"]`);
+          if (btn) { btn.click(); return 'btn.click()'; }
+          return 'not found';
+        }, tab.dataId);
+        console.log(`  Switched via: ${method}`);
       }
+
+      // The hard gate: don't screenshot until #loading is gone, #dash is
+      // visible, and real values are painted inside the iframe. Throws on
+      // timeout so the outer retry wrapper gets another shot.
+      await waitForTabReady(page, tab);
+
+      // Lazy-loaded iframes (videos/360) have fresh document roots — re-apply
+      // light theme so the capture isn't dark. Harmless on the images tab too.
+      await applyLightTheme(page);
+      // Tiny settle for the fadeUp CSS animation on #dash > *.
+      await new Promise(r => setTimeout(r, 600));
 
       const filePath = path.join(process.cwd(), tab.file);
       await page.screenshot({ path: filePath, clip: { x: 0, y: 0, width: SS_W, height: tab.cropH } });
