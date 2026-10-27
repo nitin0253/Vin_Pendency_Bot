@@ -3,7 +3,7 @@ const https = require('https');
 const path  = require('path');
 const sharp = require('sharp');
 
-const DASHBOARD_URL = 'https://spyne-qc-hub.vercel.app/';
+const DASHBOARD_URL = 'https://spyne-qc-hub.spyne.ai/';
 const BOT_TOKEN     = process.env.SLACK_BOT_TOKEN;
 const CHANNEL       = process.env.SLACK_CHANNEL;
 const WEBHOOK       = process.env.SLACK_WEBHOOK;
