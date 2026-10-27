@@ -24,7 +24,7 @@ const TABS = [
   { name: 'Videos', dataId: 'videos', file: 'qc-videos.png', emoji: '🎬', waitForData: true, cropH: 560,
     frameHostMatch: 'video-tracker-delivery' },
   { name: '360°',   dataId: '360',    file: 'qc-360.png',    emoji: '🔁', waitForData: true, cropH: 560,
-    frameHostMatch: '360-qc-pendency' },
+    frameHostMatch: '360-qc-pendency.spyne.ai' },
 ];
 
 // How long (ms) to wait per tab for #loading → #dash and real numbers to render.
