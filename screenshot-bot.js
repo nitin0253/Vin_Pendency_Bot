@@ -94,57 +94,115 @@ function findTabFrame(page, hostMatch) {
   return null;
 }
 
+// ── Probe an iframe's render state ───────────────────────────────
+// Returns {ready, reason, count} by inspecting #loading/#dash and value nodes.
+// Shared by waitForTabReady and the right-before-capture re-check.
+async function probeFrameReady(frame) {
+  return frame.evaluate(() => {
+    const loading = document.getElementById('loading');
+    const dash    = document.getElementById('dash');
+    if (!loading || !dash) return { ready: false, reason: 'elements-missing' };
+
+    const loadingDisp = (loading.style.display || getComputedStyle(loading).display);
+    const dashDisp    = (dash.style.display    || getComputedStyle(dash).display);
+    if (loadingDisp !== 'none')      return { ready: false, reason: 'loading-visible' };
+    if (dashDisp === 'none')         return { ready: false, reason: 'dash-hidden'   };
+
+    // Numbers painted? Any metric/stat/hour card with non-empty text is enough.
+    // We DON'T require >0 — a true zero count is a legitimate rendered state.
+    const vals = dash.querySelectorAll('.metric-val, .stat-card-val, .hcard-n');
+    if (vals.length === 0) return { ready: false, reason: 'no-value-nodes' };
+    const painted = Array.from(vals).some(el => (el.textContent || '').trim().length > 0);
+    return painted
+      ? { ready: true,  reason: 'ok', count: vals.length }
+      : { ready: false, reason: 'values-empty' };
+  });
+}
+
 // ── Wait until an iframe actually shows real data, not the spinner ──
 // Each inner dashboard flips #loading → display:none and #dash → display:block
 // only after its /api/data fetch + processData() finish. We poll that state
 // AND confirm at least one metric card has rendered text — belt-and-braces
 // against a race where #dash is shown but numbers haven't painted yet.
+// Also require TWO consecutive passes 400ms apart so a flicker (e.g. loadData
+// re-entry that briefly hides #dash) can't sneak through.
 async function waitForTabReady(page, tab, timeoutMs = TAB_READY_TIMEOUT_MS) {
   const start = Date.now();
   let lastReason = 'frame-not-found';
+  let consecutivePasses = 0;
+  let lastCount = 0;
 
   while (Date.now() - start < timeoutMs) {
     const frame = findTabFrame(page, tab.frameHostMatch);
     if (!frame) {
       lastReason = 'frame-not-found';
+      consecutivePasses = 0;
       await new Promise(r => setTimeout(r, 500));
       continue;
     }
 
     try {
-      const state = await frame.evaluate(() => {
-        const loading = document.getElementById('loading');
-        const dash    = document.getElementById('dash');
-        if (!loading || !dash) return { ready: false, reason: 'elements-missing' };
-
-        const loadingDisp = (loading.style.display || getComputedStyle(loading).display);
-        const dashDisp    = (dash.style.display    || getComputedStyle(dash).display);
-        if (loadingDisp !== 'none')      return { ready: false, reason: 'loading-visible' };
-        if (dashDisp === 'none')         return { ready: false, reason: 'dash-hidden'   };
-
-        // Numbers painted? Any metric/stat/hour card with non-empty text is enough.
-        // We DON'T require >0 — a true zero count is a legitimate rendered state.
-        const vals = dash.querySelectorAll('.metric-val, .stat-card-val, .hcard-n');
-        if (vals.length === 0) return { ready: false, reason: 'no-value-nodes' };
-        const painted = Array.from(vals).some(el => (el.textContent || '').trim().length > 0);
-        return painted
-          ? { ready: true,  reason: 'ok', count: vals.length }
-          : { ready: false, reason: 'values-empty' };
-      });
-
+      const state = await probeFrameReady(frame);
       if (state.ready) {
-        console.log(`  ✅ ${tab.name} ready (${state.count} value nodes rendered)`);
-        return true;
+        consecutivePasses++;
+        lastCount = state.count;
+        if (consecutivePasses >= 2) {
+          console.log(`  ✅ ${tab.name} ready (${lastCount} value nodes, stable)`);
+          return true;
+        }
+      } else {
+        consecutivePasses = 0;
+        lastReason = state.reason;
       }
-      lastReason = state.reason;
     } catch (e) {
       // Frame can navigate / detach while we poll — treat as still-loading.
+      consecutivePasses = 0;
       lastReason = `evaluate-error:${e.message.slice(0, 60)}`;
     }
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 400));
   }
 
   throw new Error(`${tab.name} tab did not render within ${timeoutMs}ms (last: ${lastReason})`);
+}
+
+// ── Right-before-capture guard ────────────────────────────────────
+// Even after waitForTabReady, applyLightTheme + fadeUp animation + the
+// dashboard's own 1Hz tick can race. Verify both:
+//   (a) the right <iframe> in the hub shell is still display:block, and
+//   (b) the inner frame still reports painted values.
+// Short timeout — this is a flicker-catcher, not a full wait.
+async function ensureStillPainted(page, tab, timeoutMs = 15000) {
+  const start = Date.now();
+  let lastReason = 'init';
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const shellVisible = await page.evaluate((dataId) => {
+        const el = document.getElementById('f-' + dataId);
+        if (!el) return { ok: false, reason: 'shell-iframe-missing' };
+        const disp = el.style.display || getComputedStyle(el).display;
+        if (disp === 'none') return { ok: false, reason: 'shell-iframe-hidden' };
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) return { ok: false, reason: 'shell-iframe-collapsed' };
+        return { ok: true };
+      }, tab.dataId);
+      if (!shellVisible.ok) {
+        lastReason = shellVisible.reason;
+      } else {
+        const frame = findTabFrame(page, tab.frameHostMatch);
+        if (!frame) {
+          lastReason = 'frame-not-found';
+        } else {
+          const s = await probeFrameReady(frame);
+          if (s.ready) return;
+          lastReason = s.reason;
+        }
+      }
+    } catch (e) {
+      lastReason = `evaluate-error:${e.message.slice(0, 60)}`;
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  throw new Error(`${tab.name} lost paint before capture (last: ${lastReason})`);
 }
 
 // ── Block non-essential requests to cut data transfer per run ────
@@ -278,8 +336,13 @@ async function takeScreenshotsOnce() {
       // Lazy-loaded iframes (videos/360) have fresh document roots — re-apply
       // light theme so the capture isn't dark. Harmless on the images tab too.
       await applyLightTheme(page);
-      // Tiny settle for the fadeUp CSS animation on #dash > *.
-      await new Promise(r => setTimeout(r, 600));
+      // Settle long enough for the staggered fadeUp (last child finishes at
+      // ~550ms) plus a cushion for the dashboard's 1Hz refresh-ring tick.
+      await new Promise(r => setTimeout(r, 900));
+      // Flicker-catcher: dashboards (esp. Images) can re-enter loadData and
+      // briefly hide #dash. Confirm the iframe is still painted RIGHT before
+      // the shutter — if not, wait for it to come back.
+      await ensureStillPainted(page, tab);
 
       const filePath = path.join(process.cwd(), tab.file);
       await page.screenshot({ path: filePath, clip: { x: 0, y: 0, width: SS_W, height: tab.cropH } });
